@@ -3,20 +3,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 set(BOOST_VERSION 1.89.0)
+# 用绝对路径，避免相对路径在「源码目录 / 构建目录」间歧义（iOS 构建会复用此文件）。
+set(BOOST_ARCHIVE "${CYIME_ROOT}/boost-${BOOST_VERSION}.tar.xz")
 
-if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CYIME_ROOT}/boost")
+if(NOT EXISTS "${BOOST_ARCHIVE}" AND NOT EXISTS "${CYIME_ROOT}/boost")
   set(BOOST_SHA256 "67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74")
   set(BOOST_URL "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/boost-${BOOST_VERSION}-cmake.tar.xz")
 
   message(STATUS "Downloading Boost ${BOOST_VERSION} from GitHub ......")
-  file(DOWNLOAD "${BOOST_URL}" boost-${BOOST_VERSION}.tar.xz
+  file(DOWNLOAD "${BOOST_URL}" "${BOOST_ARCHIVE}"
        EXPECTED_HASH SHA256=${BOOST_SHA256} SHOW_PROGRESS STATUS _dl_status)
   list(GET _dl_status 0 _dl_code)
   list(GET _dl_status 1 _dl_msg)
 
   if(NOT _dl_code EQUAL 0)
     message(STATUS "GitHub download failed (${_dl_msg}), trying ghproxy mirror ...")
-    file(DOWNLOAD "https://ghproxy.net/${BOOST_URL}" boost-${BOOST_VERSION}.tar.xz
+    file(DOWNLOAD "https://ghproxy.net/${BOOST_URL}" "${BOOST_ARCHIVE}"
          EXPECTED_HASH SHA256=${BOOST_SHA256} SHOW_PROGRESS STATUS _dl_status2)
     list(GET _dl_status2 0 _dl_code2)
 
@@ -43,9 +45,9 @@ if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CYIME_ROOT}/boos
 endif()
 
 if(NOT EXISTS "${CYIME_ROOT}/boost")
-  if(EXISTS "boost-${BOOST_VERSION}.tar.xz")
+  if(EXISTS "${BOOST_ARCHIVE}")
     message(STATUS "Extracting Boost ${BOOST_VERSION} from cached archive ......")
-    file(ARCHIVE_EXTRACT INPUT "boost-${BOOST_VERSION}.tar.xz" DESTINATION "${CYIME_ROOT}")
+    file(ARCHIVE_EXTRACT INPUT "${BOOST_ARCHIVE}" DESTINATION "${CYIME_ROOT}")
     file(RENAME "${CYIME_ROOT}/boost-${BOOST_VERSION}" "${CYIME_ROOT}/boost")
   endif()
 endif()
@@ -64,7 +66,7 @@ set(BOOST_INCLUDE_LIBRARIES
     utility
     uuid)
 
-add_subdirectory("${CYIME_ROOT}/boost" EXCLUDE_FROM_ALL)
+add_subdirectory("${CYIME_ROOT}/boost" "${CMAKE_BINARY_DIR}/boost" EXCLUDE_FROM_ALL)
 
 # Create INTERFACE IMPORTED targets for any Boost::* library that is
 # referenced as a dependency but not provided by the CMake adaptor.

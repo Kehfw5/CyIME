@@ -20,10 +20,23 @@ settings:
     CLANG_ENABLE_MODULES: YES
     # Rime 桥接：让 Swift 访问 Obj-C++ 的 RimeBridge。
     SWIFT_OBJC_BRIDGING_HEADER: CyIME/Rime/CyIME-Bridging-Header.h
+    # RimeBridge.mm 需要 librime 的公开头 rime_api.h。
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    HEADER_SEARCH_PATHS:
+      - $(inherited)
+      - $(SRCROOT)/../app/src/main/jni/librime/src
+      - $(SRCROOT)/../app/src/main/jni/librime/include
     # librime 静态库（由 ios/scripts/build-native.sh 产出）。
     # -force_load 确保 RIME_REGISTER_MODULE 的静态构造器不被链接器裁掉。
-    LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/native/lib"
-    OTHER_LDFLAGS: "$(inherited) -force_load $(SRCROOT)/native/lib/libCyIMERime.a -lc++ -lz"
+    LIBRARY_SEARCH_PATHS:
+      - $(inherited)
+      - $(SRCROOT)/native/lib
+    OTHER_LDFLAGS:
+      - $(inherited)
+      - -force_load
+      - $(SRCROOT)/native/lib/libCyIMERime.a
+      - -lc++
+      - -lz
 
 targets:
   CyIME:

@@ -18,8 +18,11 @@ final class RimeEngine {
 
     private let bridge = RimeBridge.shared
 
-    /// librime 是否已初始化（未链接 / 未部署时让键盘回退到 stub）。
-    var isReady: Bool { RimeBridge.isReady }
+    /// librime 是否真正可用（初始化成功且加载到 schema）。
+    /// 未就绪时键盘回退到 stub，避免“打不出字”的假象。
+    private(set) var ready = false
+
+    var isReady: Bool { ready }
 
     /// 设置数据目录并初始化引擎 + 创建会话。
     /// - Parameters:
@@ -27,9 +30,17 @@ final class RimeEngine {
     ///   - userDataDir: 用户词典与 build 产物目录。
     func setup(sharedDataDir: String, userDataDir: String) -> Bool {
         guard bridge.setup(withSharedDataDir: sharedDataDir, userDataDir: userDataDir) else {
+            ready = false
             return false
         }
-        return bridge.createSession()
+        guard bridge.createSession() else {
+            ready = false
+            return false
+        }
+        // 没有 schema（数据未部署）时视为未就绪，回退 stub。
+        let schema = bridge.schemaId() ?? ""
+        ready = !schema.isEmpty
+        return ready
     }
 
     /// 完整部署（构建 .bin）。首次运行较慢，由主 App 调用。

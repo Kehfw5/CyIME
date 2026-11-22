@@ -106,3 +106,10 @@ hs_err_pid*.log
 
 # 用户上传的临时附件（截图/文档），不进仓库
 /.uploads/
+
+# iOS 工程与本地产物
+/ios/CyIME.xcodeproj/
+/ios/build/
+/ios/DerivedData/
+/ios/native/build/
+/ios/native/lib/

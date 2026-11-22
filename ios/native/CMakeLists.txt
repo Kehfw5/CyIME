@@ -21,6 +21,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(BUILD_SHARED_LIBS "" OFF)
 option(BUILD_TESTING "" OFF)
 option(BUILD_STATIC "" ON)
+# librime 默认 BUILD_TEST=ON 会 find_package(GTest REQUIRED)；iOS 不跑测试。
+option(BUILD_TEST "" OFF)
+# octagram 插件默认会编译命令行工具（可执行文件）；iOS 静态库不需要。
+set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 
 # 去掉绝对路径，保证产物与构建机无关（与 Android 构建保持一致）。
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CYIME_JNI_DIR}=")
@@ -160,6 +164,11 @@ if(NOT EXISTS "${CYIME_JNI_DIR}/librime/plugins/lua/thirdparty")
        DESTINATION "${CYIME_JNI_DIR}/librime/plugins/lua/thirdparty")
 endif()
 
+# T9 整句重排依赖 onnxruntime（t9_sentence_scorer.cc 硬 include onnxruntime_cxx_api.h）。
+# iOS 不引入 ONNX：删掉拷贝进 plugins 的这个文件，改用无 ONNX 桩；
+# Android 发布包本就不打包模型，行为一致。
+file(REMOVE "${CYIME_JNI_DIR}/librime/plugins/librime-t9/src/t9_sentence_scorer.cc")
+
 cyime_apply_patch("${CYIME_JNI_DIR}/librime" "${CYIME_JNI_DIR}/cmake/RimeDictionary.patch")
 
 # ---- 构建 librime ----
@@ -167,20 +176,30 @@ add_subdirectory("${CYIME_JNI_DIR}/librime" "${CMAKE_BINARY_DIR}/librime")
 target_compile_options(
   rime-static PRIVATE "-ffile-prefix-map=${CYIME_JNI_DIR}=." "-Wno-error=deprecated-declarations")
 
-# ---- 把 CyIME 自定义 C++ 编进 rime-static（不含 ONNX/CYLM_ORT） ----
+# ---- 把 CyIME 自定义 C++ 编进 rime-static ----
 target_include_directories(rime-static PRIVATE "${CYIME_JNI_DIR}/librime-t9/src")
 target_include_directories(rime-static PRIVATE "${CYIME_JNI_DIR}/librime-octagram/src")
 target_include_directories(rime-octagram-objs PRIVATE "${CYIME_JNI_DIR}/librime-t9/src")
 target_include_directories(rime-static PRIVATE "${CYIME_JNI_DIR}/cyime_rime")
+# cyime_rime/t9_cylm_sentence.h 会 include <cylm.h>，需要 cylm 目录。
+target_include_directories(rime-static PRIVATE "${CYIME_JNI_DIR}/cylm")
 target_sources(rime-static PRIVATE
   "${CYIME_JNI_DIR}/cyime_rime/t9_script_options.cc"
   "${CYIME_JNI_DIR}/cyime_rime/t9_cylm_sentence.cc"
   "${CYIME_JNI_DIR}/cyime_rime/t9_sentence_rescore.cc"
   "${CYIME_JNI_DIR}/cyime_rime/full_pinyin_tail.cc"
-  "${CYIME_JNI_DIR}/cyime_rime/t9_joint_decoder.cc")
+  "${CYIME_JNI_DIR}/cyime_rime/t9_joint_decoder.cc"
+  # CyLM 解码器：编译，但不定义 CYLM_ORT（其重排器走内置的“无 ONNX”桩分支），
+  # 这样既满足 cyime_rime 的链接需求，又不引入 onnxruntime。
+  "${CYIME_JNI_DIR}/cylm/cylm.cpp"
+  # 无 ONNX 的整句重排桩（替代被移除的 t9_sentence_scorer.cc）。
+  "${CMAKE_CURRENT_LIST_DIR}/t9_sentence_scorer_stub.cc")
 
-# 注意：cylm.cpp（CyLM 解码器 / ONNX 重排器）默认关闭，iOS 第一版不编入，
-# 以去掉 onnxruntime 依赖。需要时再单独把 CyLM 的非 ONNX 路径接回来。
+set_source_files_properties("${CYIME_JNI_DIR}/cylm/cylm.cpp"
+  TARGET_DIRECTORY rime-static
+  PROPERTIES
+  COMPILE_DEFINITIONS "CYLM_LIBRARY"
+  COMPILE_OPTIONS "-Wno-unused-result")
 
 # ---- 输出：把 rime-static 及其依赖合并成一个静态库 ----
 # 由 build-native.sh 用 libtool -static 合并，这里只保证 rime-static 目标存在。

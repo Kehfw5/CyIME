@@ -1,7 +1,7 @@
 name: Build unsigned iOS IPA
 
-# 只产出【未签名】IPA，不需要任何 Secret / 证书。
-# 下载产物后由使用者用自己的证书手动签名安装。
+# 在 macOS runner 上：编译 librime 原生静态库 -> xcodegen -> 无签名 IPA。
+# 不需要任何 Secret / 证书；产物下载后用自己的证书（Feather / 3uTools）手动签名安装。
 # 手动触发：Actions 页面 -> Run workflow。
 on:
   workflow_dispatch:
@@ -14,21 +14,21 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: ios
-
 jobs:
   build:
     name: Unsigned IPA
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
       DEPLOY_TARGET: ${{ github.event.inputs.deploy_target }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (with submodules)
         uses: actions/checkout@v7
+        with:
+          # librime / snappy / lua / octagram / predict / rime-wubi 都是 submodule
+          submodules: recursive
+          fetch-depth: 1
 
       - name: Select latest Xcode
         run: |
@@ -38,10 +38,35 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i iphoneos || true
 
+      - name: Cache Boost source
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jni/boost-1.89.0.tar.xz
+          key: boost-1.89.0-cmake-tar
+
       - name: Install xcodegen
-        run: brew install xcodegen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then brew install xcodegen; fi
+          xcodegen --version
+
+      - name: Build librime static library
+        working-directory: ios
+        run: |
+          chmod +x scripts/build-native.sh
+          ./scripts/build-native.sh
+
+      - name: Verify static library
+        working-directory: ios
+        run: |
+          lipo -info native/lib/libCyIMERime.a
+          echo "--- rime public symbols ---"
+          nm -gU native/lib/libCyIMERime.a 2>/dev/null | grep -E "rime_get_api|rime_setup" | head -5 || true
+          if ! lipo -info native/lib/libCyIMERime.a | grep -q arm64; then
+            echo "错误: 静态库不含 arm64"; exit 1
+          fi
 
       - name: Build unsigned IPA
+        working-directory: ios
         run: |
           chmod +x scripts/build-unsigned-ipa.sh
           ./scripts/build-unsigned-ipa.sh
