@@ -1,0 +1,54 @@
+name: Build unsigned iOS IPA
+
+# 只产出【未签名】IPA，不需要任何 Secret / 证书。
+# 下载产物后由使用者用自己的证书手动签名安装。
+# 手动触发：Actions 页面 -> Run workflow。
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "IPHONEOS_DEPLOYMENT_TARGET（默认 26.0）"
+        default: "26.0"
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: ios
+
+jobs:
+  build:
+    name: Unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEPLOY_TARGET: ${{ github.event.inputs.deploy_target }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "Selected: $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build unsigned IPA
+        run: |
+          chmod +x scripts/build-unsigned-ipa.sh
+          ./scripts/build-unsigned-ipa.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyIME-unsigned-ipa
+          path: ios/build/CyIME-unsigned.ipa
+          if-no-files-found: error
