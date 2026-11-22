@@ -16,7 +16,7 @@ struct RimeState {
 final class RimeEngine {
     static let shared = RimeEngine()
 
-    private let bridge = RimeBridge.shared
+    private let bridge = RimeBridge.shared()
 
     /// librime 是否真正可用（初始化成功且加载到 schema）。
     /// 未就绪时键盘回退到 stub，避免“打不出字”的假象。
