@@ -30,8 +30,15 @@ struct KeySpec: Identifiable, Hashable {
     var isSpacer: Bool = false
 }
 
+/// X11 keysym 常量，供 librime 的 process_key 使用。
+enum RimeKeycode {
+    static let space: Int32 = 0x0020
+    static let backspace: Int32 = 0xFF08
+    static let ret: Int32 = 0xFF0D
+}
+
 /// M0 的占位中文引擎：只验证候选栏、编码、上屏流程。
-/// M1 会替换成真正由 librime 提供的候选。
+/// librime 未就绪时作为回退，避免键盘不可用。
 struct StubChineseEngine {
     private let table: [String: [String]] = [
         "ni": ["你", "呢", "尼", "泥", "逆"],
@@ -82,7 +89,12 @@ final class KeyboardModel: ObservableObject {
     private let deleteBackward: () -> Void
     private let advanceInputMode: () -> Void
     private let dismissKeyboard: () -> Void
-    private let engine = StubChineseEngine()
+
+    private let stub = StubChineseEngine()
+    private let rime = RimeEngine.shared
+
+    /// librime 是否可用（已初始化）。未就绪时回退到 stub。
+    private var usesRime: Bool { rime.isReady }
 
     init(
         insertText: @escaping (String) -> Void,
@@ -94,6 +106,7 @@ final class KeyboardModel: ObservableObject {
         self.deleteBackward = deleteBackward
         self.advanceInputMode = advanceInputMode
         self.dismissKeyboard = dismissKeyboard
+        refreshStatus()
     }
 
     var modeLabel: String { mode.rawValue }
@@ -107,8 +120,12 @@ final class KeyboardModel: ObservableObject {
         case .character(let value):
             switch mode {
             case .chinese:
-                composing += value.lowercased()
-                refreshCandidates()
+                if usesRime {
+                    apply(rime.process(keycode: keycode(for: value)))
+                } else {
+                    composing += value.lowercased()
+                    refreshCandidates()
+                }
             case .english:
                 insertText(isShifted ? value.uppercased() : value)
                 if isShifted { isShifted = false }
@@ -118,20 +135,38 @@ final class KeyboardModel: ObservableObject {
         case .shift:
             isShifted.toggle()
         case .delete:
-            if composing.isEmpty {
+            if usesRime {
+                if composing.isEmpty {
+                    deleteBackward()
+                } else {
+                    apply(rime.process(keycode: RimeKeycode.backspace))
+                }
+            } else if composing.isEmpty {
                 deleteBackward()
             } else {
                 composing.removeLast()
                 refreshCandidates()
             }
         case .space:
-            if !composing.isEmpty, let first = candidates.first {
+            if usesRime {
+                if composing.isEmpty {
+                    insertText(" ")
+                } else {
+                    apply(rime.process(keycode: RimeKeycode.space))
+                }
+            } else if !composing.isEmpty, let first = candidates.first {
                 commitCandidate(first)
             } else {
                 insertText(" ")
             }
         case .ret:
-            if composing.isEmpty {
+            if usesRime {
+                if composing.isEmpty {
+                    insertText("\n")
+                } else {
+                    apply(rime.commit())
+                }
+            } else if composing.isEmpty {
                 insertText("\n")
             } else {
                 commitCandidate(composing)
@@ -148,13 +183,23 @@ final class KeyboardModel: ObservableObject {
                 mode = .chinese
             }
             clearComposing()
-            status = "模式：\(modeLabel)"
+            refreshStatus()
         case .toggleNumbers:
             mode = mode == .numbers ? .chinese : .numbers
             clearComposing()
-            status = "模式：\(modeLabel)"
+            refreshStatus()
         case .dismiss:
             dismissKeyboard()
+        }
+    }
+
+    /// 选中当前候选页第 index 个候选。Rime 就绪时按 index 选择，否则用 stub 文本。
+    func selectCandidate(at index: Int) {
+        guard index >= 0, index < candidates.count else { return }
+        if usesRime {
+            apply(rime.selectCandidate(index))
+        } else {
+            commitCandidate(candidates[index])
         }
     }
 
@@ -169,14 +214,38 @@ final class KeyboardModel: ObservableObject {
         self.hasText = hasText
     }
 
+    private func apply(_ state: RimeState) {
+        if let commit = state.commit, !commit.isEmpty {
+            insertText(commit)
+        }
+        composing = state.preedit
+        candidates = state.candidates
+        refreshStatus()
+    }
+
+    private func keycode(for character: String) -> Int32 {
+        Int32(character.lowercased().utf8.first ?? 0)
+    }
+
     private func clearComposing() {
         composing = ""
         candidates = []
+        if usesRime {
+            _ = rime.clear()
+        }
     }
 
     private func refreshCandidates() {
-        candidates = engine.candidates(for: composing)
-        status = composing.isEmpty ? "M0 最小键盘 · Rime 未接入" : "编码：\(composing)"
+        candidates = stub.candidates(for: composing)
+        refreshStatus()
+    }
+
+    private func refreshStatus() {
+        if usesRime {
+            status = composing.isEmpty ? "Rime" : "编码：\(composing)"
+        } else {
+            status = composing.isEmpty ? "M0 最小键盘 · Rime 未接入" : "编码：\(composing)"
+        }
     }
 
     private func display(_ character: String) -> String {

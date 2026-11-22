@@ -4,7 +4,7 @@
 
 set(BOOST_VERSION 1.89.0)
 
-if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CMAKE_SOURCE_DIR}/boost")
+if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CYIME_ROOT}/boost")
   set(BOOST_SHA256 "67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74")
   set(BOOST_URL "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/boost-${BOOST_VERSION}-cmake.tar.xz")
 
@@ -22,11 +22,11 @@ if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CMAKE_SOURCE_DIR
 
     if(NOT _dl_code2 EQUAL 0)
       message(STATUS "ghproxy also failed, trying local Boost source ...")
-      file(REMOVE_RECURSE "${CMAKE_SOURCE_DIR}/boost")
+      file(REMOVE_RECURSE "${CYIME_ROOT}/boost")
       if(EXISTS "/tmp/boost_${BOOST_VERSION}")
-        file(COPY "/tmp/boost_${BOOST_VERSION}/" DESTINATION "${CMAKE_SOURCE_DIR}/boost")
+        file(COPY "/tmp/boost_${BOOST_VERSION}/" DESTINATION "${CYIME_ROOT}/boost")
       elseif(EXISTS "/tmp/boost_1_89_0")
-        file(COPY "/tmp/boost_1_89_0/" DESTINATION "${CMAKE_SOURCE_DIR}/boost")
+        file(COPY "/tmp/boost_1_89_0/" DESTINATION "${CYIME_ROOT}/boost")
       else()
         message(FATAL_ERROR "Cannot download Boost ${BOOST_VERSION}. "
           "Please download boost_${BOOST_VERSION}.tar.bz2 from "
@@ -38,16 +38,15 @@ if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CMAKE_SOURCE_DIR
 
   if(_dl_code EQUAL 0 OR _dl_code2 EQUAL 0)
     message(STATUS "Remove older version Boost")
-    file(REMOVE_RECURSE "${CMAKE_SOURCE_DIR}/boost")
+    file(REMOVE_RECURSE "${CYIME_ROOT}/boost")
   endif()
 endif()
 
-if(NOT EXISTS "${CMAKE_SOURCE_DIR}/boost")
+if(NOT EXISTS "${CYIME_ROOT}/boost")
   if(EXISTS "boost-${BOOST_VERSION}.tar.xz")
     message(STATUS "Extracting Boost ${BOOST_VERSION} from cached archive ......")
-    file(ARCHIVE_EXTRACT INPUT boost-${BOOST_VERSION}.tar.xz DESTINATION
-         ${CMAKE_SOURCE_DIR})
-    file(RENAME "boost-${BOOST_VERSION}" boost)
+    file(ARCHIVE_EXTRACT INPUT "boost-${BOOST_VERSION}.tar.xz" DESTINATION "${CYIME_ROOT}")
+    file(RENAME "${CYIME_ROOT}/boost-${BOOST_VERSION}" "${CYIME_ROOT}/boost")
   endif()
 endif()
 
@@ -65,7 +64,7 @@ set(BOOST_INCLUDE_LIBRARIES
     utility
     uuid)
 
-add_subdirectory(boost EXCLUDE_FROM_ALL)
+add_subdirectory("${CYIME_ROOT}/boost" EXCLUDE_FROM_ALL)
 
 # Create INTERFACE IMPORTED targets for any Boost::* library that is
 # referenced as a dependency but not provided by the CMake adaptor.

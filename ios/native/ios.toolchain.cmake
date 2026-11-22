@@ -1,0 +1,17 @@
+# 极简 iOS 交叉编译工具链。仅在 macOS + Xcode 上使用。
+# 用 CMake 内置的 iOS 平台支持，产出 arm64 静态库（不签名）。
+set(CMAKE_SYSTEM_NAME iOS)
+set(CMAKE_OSX_ARCHITECTURES arm64)
+set(CMAKE_OSX_SYSROOT iphoneos)
+set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "" FORCE)
+
+set(CMAKE_C_COMPILER clang)
+set(CMAKE_CXX_COMPILER clang++)
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO")
+set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
+
+# 静态库不需要 bitcode / 调试符号（可按需开启）。
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fembed-bitcode" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fembed-bitcode" CACHE STRING "" FORCE)

@@ -4,6 +4,11 @@ project(kime VERSION 1.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# 源码根目录。Android 构建时即 CMAKE_SOURCE_DIR；
+# iOS 构建（ios/native/CMakeLists.txt）会把它指到 app/src/main/jni，
+# 以便复用 cmake/ 下的 Boost/Rime/CyimeRimeSources 等 helper。
+set(CYIME_ROOT "${CMAKE_SOURCE_DIR}")
+
 # AGP invokes Ninja directly; bound its compiler and linker jobs too.
 set_property(GLOBAL PROPERTY JOB_POOLS cyime_compile=2 cyime_link=1)
 set(CMAKE_JOB_POOL_COMPILE cyime_compile)

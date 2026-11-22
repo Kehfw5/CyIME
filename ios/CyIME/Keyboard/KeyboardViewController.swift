@@ -11,6 +11,12 @@ final class KeyboardViewController: UIInputViewController {
         AppGroup.prepare()
         AppGroup.appendLog("Keyboard extension viewDidLoad")
 
+        let rimeReady = RimeEngine.shared.setup(
+            sharedDataDir: AppGroup.rimeSharedURL.path,
+            userDataDir: AppGroup.rimeUserURL.path
+        )
+        AppGroup.appendLog("RimeEngine setup ready=\(rimeReady)")
+
         view.backgroundColor = .clear
 
         let model = KeyboardModel(

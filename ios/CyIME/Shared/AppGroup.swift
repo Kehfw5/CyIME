@@ -65,12 +65,16 @@ enum AppGroup {
     }
 
     static var rimeURL: URL { rootURL.appendingPathComponent("rime", isDirectory: true) }
+    /// librime 的 shared_data_dir：放 schema/词库。
+    static var rimeSharedURL: URL { rimeURL.appendingPathComponent("shared", isDirectory: true) }
+    /// librime 的 user_data_dir：放用户词典与 build 产物（.bin）。
+    static var rimeUserURL: URL { rimeURL.appendingPathComponent("user", isDirectory: true) }
     static var modelsURL: URL { rootURL.appendingPathComponent("models", isDirectory: true) }
     static var logsURL: URL { rootURL.appendingPathComponent("logs", isDirectory: true) }
     static var ipcURL: URL { rootURL.appendingPathComponent("ipc", isDirectory: true) }
 
     static func prepare() {
-        for url in [rootURL, rimeURL, modelsURL, logsURL, ipcURL] {
+        for url in [rootURL, rimeURL, rimeSharedURL, rimeUserURL, modelsURL, logsURL, ipcURL] {
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         }
         if let resolvedIdentifier {

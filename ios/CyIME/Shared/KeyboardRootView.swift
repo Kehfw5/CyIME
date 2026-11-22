@@ -116,9 +116,9 @@ private struct CandidateBar: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
-                        ForEach(model.candidates, id: \.self) { candidate in
+                        ForEach(Array(model.candidates.enumerated()), id: \.offset) { index, candidate in
                             Button {
-                                model.commitCandidate(candidate)
+                                model.selectCandidate(at: index)
                             } label: {
                                 Text(candidate)
                                     .font(.system(size: 17))
