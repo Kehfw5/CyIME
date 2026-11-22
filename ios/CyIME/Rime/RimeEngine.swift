@@ -25,6 +25,12 @@ final class RimeEngine {
     /// 是否已完成 librime 初始化（避免重复 initialize）。
     private var didSetup = false
 
+    /// 首次 setup 时记录的数据目录，供未就绪时自动重试。
+    private var dataDirs: (shared: String, user: String)?
+
+    /// 上次重试时间，避免每次按键都重建会话。
+    private var lastRetryAt: Date = .distantPast
+
     var isReady: Bool { ready }
 
     /// 设置数据目录并初始化引擎 + 创建会话。
@@ -32,10 +38,12 @@ final class RimeEngine {
     ///   - sharedDataDir: schema/词库目录（共享）。
     ///   - userDataDir: 用户词典与 build 产物目录。
     func setup(sharedDataDir: String, userDataDir: String) -> Bool {
+        dataDirs = (sharedDataDir, userDataDir)
         if didSetup {
             refreshReady()
             return ready
         }
+        let start = CFAbsoluteTimeGetCurrent()
         guard bridge.setup(withSharedDataDir: sharedDataDir, userDataDir: userDataDir) else {
             ready = false
             return false
@@ -46,7 +54,42 @@ final class RimeEngine {
             return false
         }
         refreshReady()
+        if ready {
+            warmUp()
+        }
+        let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+        AppGroup.appendLog("Rime setup \(ms)ms ready=\(ready)")
         return ready
+    }
+
+    /// 数据部署可能在键盘启动之后才完成：未就绪时重建会话再试一次，
+    /// 让键盘自动恢复，而不必让用户手动切换键盘。
+    func ensureReady() -> Bool {
+        if ready { return true }
+        guard let dataDirs else { return false }
+        guard Date().timeIntervalSince(lastRetryAt) > 2 else { return false }
+        lastRetryAt = Date()
+        if didSetup {
+            bridge.destroySession()
+            guard bridge.createSession() else { return false }
+            refreshReady()
+            if ready {
+                warmUp()
+                AppGroup.appendLog("Rime recovered after retry")
+            }
+        } else {
+            return setup(sharedDataDir: dataDirs.shared, userDataDir: dataDirs.user)
+        }
+        return ready
+    }
+
+    /// 触发一次翻译，让词典/表在用户按键前完成首次加载。
+    private func warmUp() {
+        let start = CFAbsoluteTimeGetCurrent()
+        _ = process(keycode: 0x61)   // 'a'：只组码，不上屏
+        _ = clear()
+        let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
+        AppGroup.appendLog("Rime warmup \(ms)ms")
     }
 
     /// 完整部署（构建 .bin）。首次运行较慢，由主 App 调用。
@@ -57,6 +100,7 @@ final class RimeEngine {
         bridge.destroySession()
         _ = bridge.createSession()
         refreshReady()
+        if ready { warmUp() }
         return ok && ready
     }
 

@@ -120,7 +120,7 @@ final class KeyboardModel: ObservableObject {
         case .character(let value):
             switch mode {
             case .chinese:
-                if usesRime {
+                if usesRime || rime.ensureReady() {
                     apply(rime.process(keycode: keycode(for: value)))
                 } else {
                     composing += value.lowercased()
@@ -214,6 +214,11 @@ final class KeyboardModel: ObservableObject {
         self.hasText = hasText
     }
 
+    /// 引擎状态可能变化（例如主 App 刚完成部署），刷新状态栏文案。
+    func refreshEngineStatus() {
+        refreshStatus()
+    }
+
     private func apply(_ state: RimeState) {
         if let commit = state.commit, !commit.isEmpty {
             insertText(commit)
@@ -242,9 +247,11 @@ final class KeyboardModel: ObservableObject {
 
     private func refreshStatus() {
         if usesRime {
-            status = composing.isEmpty ? "Rime" : "编码：\(composing)"
+            status = composing.isEmpty ? "Rime 就绪" : "编码：\(composing)"
         } else {
-            status = composing.isEmpty ? "M0 最小键盘 · Rime 未接入" : "编码：\(composing)"
+            status = composing.isEmpty
+                ? "Rime 未就绪 · 请打开 CyIME App 完成初始化"
+                : "编码：\(composing)"
         }
     }
 

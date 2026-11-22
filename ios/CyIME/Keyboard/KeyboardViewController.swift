@@ -58,6 +58,9 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // 主 App 可能刚完成数据部署：未就绪时自动重试并刷新状态。
+        _ = RimeEngine.shared.ensureReady()
+        model?.refreshEngineStatus()
         model?.updateContext(hasText: textDocumentProxy.hasText)
     }
 
