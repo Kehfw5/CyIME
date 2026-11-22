@@ -66,7 +66,12 @@ option(SNAPPY_INSTALL "" OFF)
 add_subdirectory("${CYIME_JNI_DIR}/snappy" "${CMAKE_BINARY_DIR}/snappy")
 
 # leveldb
-set(HAVE_SNAPPY TRUE)
+# 注意：交叉编译时 CMake 用 STATIC_LIBRARY 做 try-compile，check_library_exists 会
+# 误判“找到了 crc32c / tcmalloc”（实际 iOS 没有），导致 include 不存在的头而失败。
+# 显式关掉，强制用 leveldb 自带的 portable crc32c；snappy 由本工程编译并提供。
+set(HAVE_CRC32C OFF CACHE BOOL "" FORCE)
+set(HAVE_TCMALLOC OFF CACHE BOOL "" FORCE)
+set(HAVE_SNAPPY ON CACHE BOOL "" FORCE)
 option(LEVELDB_BUILD_TESTS "" OFF)
 option(LEVELDB_BUILD_BENCHMARKS "" OFF)
 option(LEVELDB_INSTALL "" OFF)
@@ -170,6 +175,10 @@ endif()
 file(REMOVE "${CYIME_JNI_DIR}/librime/plugins/librime-t9/src/t9_sentence_scorer.cc")
 
 cyime_apply_patch("${CYIME_JNI_DIR}/librime" "${CYIME_JNI_DIR}/cmake/RimeDictionary.patch")
+
+# iOS 上 system() 被标记为不可用；Lua 官方的 LUA_USE_IOS 会把 os.execute 的
+# l_system 变成 no-op（同时启用 POSIX/DLOPEN，与 macOS 配置一致）。
+add_compile_definitions(LUA_USE_IOS)
 
 # ---- 构建 librime ----
 add_subdirectory("${CYIME_JNI_DIR}/librime" "${CMAKE_BINARY_DIR}/librime")
