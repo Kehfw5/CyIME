@@ -1,17 +1,21 @@
 import SwiftUI
 import UIKit
 
+@MainActor
 struct ContentView: View {
     @State private var testText = ""
     @State private var logText = ""
     @State private var groupStatus = "检查中"
     @State private var probeText = ""
+    @State private var rimeStatus = "未准备"
+    @State private var isPreparing = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     setupCard
+                    rimeCard
                     testCard
                     diagnosticsCard
                 }
@@ -23,16 +27,17 @@ struct ContentView: View {
                 AppGroup.prepare()
                 AppGroup.appendLog("App launched")
                 refresh()
+                prepareRimeIfNeeded()
             }
         }
     }
 
     private var setupCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("M0 · 最小键盘")
+            Text("M1 · Rime 引擎")
                 .font(.headline)
 
-            Text("当前只验证键盘扩展、上屏和 App Group。Rime 引擎下一步接入。")
+            Text("首次使用需在本页完成 Rime 数据安装与部署；完成后键盘即可输入中文。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -47,6 +52,37 @@ struct ContentView: View {
             .buttonStyle(.bordered)
 
             Text("设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → CyIME，然后打开“允许完全访问”。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var rimeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Rime 数据")
+                .font(.headline)
+
+            Text(rimeStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
+            HStack(spacing: 10) {
+                Button(isPreparing ? "部署中…" : "安装数据并部署") {
+                    prepareRime()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isPreparing)
+
+                if isPreparing {
+                    ProgressView()
+                }
+            }
+
+            Text("数据：简体全拼 pinyin_simp。部署成功后回到键盘重新切换一次即可生效。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -122,6 +158,45 @@ struct ContentView: View {
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func prepareRimeIfNeeded() {
+        if RimeEngine.shared.isReady {
+            rimeStatus = "就绪 · pinyin_simp 已加载"
+            return
+        }
+        prepareRime()
+    }
+
+    /// 安装数据并部署。部署是阻塞的原生调用，一次性操作，期间显示“部署中…”。
+    private func prepareRime() {
+        guard !isPreparing else { return }
+        isPreparing = true
+        let install = RimeDataInstaller.installIfNeeded()
+        rimeStatus = "\(install.message)，部署中…"
+        AppGroup.appendLog("Rime install: \(install.message)")
+
+        Task { @MainActor in
+            await Task.yield()   // 先让“部署中…”渲染出来
+            let shared = AppGroup.rimeSharedURL.path
+            let user = AppGroup.rimeUserURL.path
+            let engine = RimeEngine.shared
+            let setupOK = engine.setup(sharedDataDir: shared, userDataDir: user)
+            let deployed = setupOK ? engine.deploy() : false
+            isPreparing = false
+
+            if deployed && engine.isReady {
+                rimeStatus = "就绪 · pinyin_simp 已加载"
+            } else if setupOK {
+                rimeStatus = "部署未完成（详见下方诊断日志）"
+            } else {
+                rimeStatus = "初始化失败（详见下方诊断日志）"
+            }
+            AppGroup.appendLog(
+                "Rime prepare install=\(install.installed) setup=\(setupOK) deployed=\(deployed) ready=\(engine.isReady)"
+            )
+            refresh()
+        }
     }
 
     private func refresh() {

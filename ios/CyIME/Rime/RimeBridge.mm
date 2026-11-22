@@ -99,21 +99,13 @@ static const int RimeControlMask = 4;
 
 - (BOOL)deploy {
     if (_api == NULL) return NO;
-
-    RimeTraits traits = {0};
-    RIME_STRUCT_INIT(RimeTraits, traits);
-    traits.shared_data_dir = _sharedDataDir.UTF8String;
-    traits.user_data_dir = _userDataDir.UTF8String;
-    traits.app_name = "rime.cyime";
-
-    _api->deployer_initialize(&traits);
-    _api->prebuild();
-    if (!_api->deploy()) {
-        return NO;
+    // 引擎已 initialize。full_check=TRUE 触发全量维护（构建/重建 .bin），
+    // 再等待维护线程结束。标准用法即 StartMaintenance + JoinMaintenanceThread。
+    Bool started = _api->start_maintenance(True);
+    if (started) {
+        _api->join_maintenance_thread();
     }
-    _api->start_maintenance(True);
-    _api->join_maintenance_thread();
-    return YES;
+    return started ? YES : NO;
 }
 
 - (BOOL)createSession {

@@ -22,6 +22,9 @@ final class RimeEngine {
     /// 未就绪时键盘回退到 stub，避免“打不出字”的假象。
     private(set) var ready = false
 
+    /// 是否已完成 librime 初始化（避免重复 initialize）。
+    private var didSetup = false
+
     var isReady: Bool { ready }
 
     /// 设置数据目录并初始化引擎 + 创建会话。
@@ -29,23 +32,38 @@ final class RimeEngine {
     ///   - sharedDataDir: schema/词库目录（共享）。
     ///   - userDataDir: 用户词典与 build 产物目录。
     func setup(sharedDataDir: String, userDataDir: String) -> Bool {
+        if didSetup {
+            refreshReady()
+            return ready
+        }
         guard bridge.setup(withSharedDataDir: sharedDataDir, userDataDir: userDataDir) else {
             ready = false
             return false
         }
+        didSetup = true
         guard bridge.createSession() else {
             ready = false
             return false
         }
-        // 没有 schema（数据未部署）时视为未就绪，回退 stub。
-        let schema = bridge.schemaId() ?? ""
-        ready = !schema.isEmpty
+        refreshReady()
         return ready
     }
 
     /// 完整部署（构建 .bin）。首次运行较慢，由主 App 调用。
+    /// 部署后重建会话并刷新 schema 状态。
     func deploy() -> Bool {
-        bridge.deploy()
+        guard didSetup else { return false }
+        let ok = bridge.deploy()
+        bridge.destroySession()
+        _ = bridge.createSession()
+        refreshReady()
+        return ok && ready
+    }
+
+    /// 无 schema（数据未部署）时视为未就绪，键盘回退 stub。
+    private func refreshReady() {
+        let schema = bridge.schemaId() ?? ""
+        ready = !schema.isEmpty
     }
 
     @discardableResult
