@@ -97,3 +97,16 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
+    postBuildScripts:
+      - name: Bundle glide data
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          SRC="${SRCROOT}/../app/src/main/assets"
+          DEST="${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/GlideData"
+          rm -rf "${DEST}"
+          mkdir -p "${DEST}"
+          for f in glide_pinyin.txt glide_pinyin_words.txt english.txt english_glide_words.txt; do
+            if [ -f "${SRC}/${f}" ]; then cp "${SRC}/${f}" "${DEST}/${f}"; fi
+          done
+          echo "Bundled glide data: $(ls -1 "${DEST}" | wc -l | tr -d ' ') files"

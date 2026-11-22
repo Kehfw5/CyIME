@@ -317,38 +317,14 @@ final class KeyboardModel: ObservableObject {
 
     private var glideMode = false
 
-    /// 滑行过程中实时更新：编码 + 候选（用 Rime 临时会话预览，不改动正式会话）。
-    /// code 为“停顿键”拼出的编码；若预览无候选，退回 fallback（整条轨迹的字母）。
-    func updateGlide(code: String, fallback: String = "") {
-        guard mode == .chinese else { return }
-        let trimmed = code.lowercased()
-        guard !trimmed.isEmpty else { return }
-
-        var used = trimmed
-        var results = rime.previewCandidates(code: trimmed)
-        let fb = fallback.lowercased()
-        if results.isEmpty, !fb.isEmpty, fb != trimmed {
-            let fallbackResults = rime.previewCandidates(code: fb)
-            if !fallbackResults.isEmpty {
-                used = fb
-                results = fallbackResults
-            }
-        }
-
-        glideMode = true
-        composing = used
-        candidates = results
-        status = "滑行"
+    /// 用移植自 Android 的解码器识别整条轨迹，实时更新候选（不直接上屏）。
+    func glidePreview(xs: [Float], ys: [Float], keyUnit: Float, centers: [Character: (x: Float, y: Float)]) {
+        applyGlide(xs: xs, ys: ys, keyUnit: keyUnit, centers: centers, isFinal: false)
     }
 
-    /// 抬手：锁定最终编码与候选，交给用户点选（不直接上屏）。
-    func finishGlide(code: String, fallback: String) {
-        let trimmed = code.lowercased()
-        guard !trimmed.isEmpty else {
-            cancelGlide()
-            return
-        }
-        updateGlide(code: trimmed, fallback: fallback)
+    /// 抬手：锁定最终候选，交给用户点选。
+    func glideFinish(xs: [Float], ys: [Float], keyUnit: Float, centers: [Character: (x: Float, y: Float)]) {
+        applyGlide(xs: xs, ys: ys, keyUnit: keyUnit, centers: centers, isFinal: true)
         if candidates.isEmpty {
             cancelGlide()
         }
@@ -360,6 +336,47 @@ final class KeyboardModel: ObservableObject {
         composing = ""
         candidates = []
         refreshStatus()
+    }
+
+    private func applyGlide(xs: [Float], ys: [Float], keyUnit: Float,
+                            centers: [Character: (x: Float, y: Float)],
+                            isFinal: Bool) {
+        guard keyUnit > 0, centers.count >= 20 else { return }
+        let keyboard = GlideKeyboard(keyUnit: keyUnit, centers: centers)
+
+        if mode == .english {
+            let decoded = GlideLexicon.shared.englishCandidates(xs: xs, ys: ys, keyboard: keyboard)
+            guard !decoded.isEmpty else { return }
+            let texts = decoded.map { display($0.word) }
+            glideMode = true
+            composing = texts.first ?? ""
+            candidates = texts
+            status = "滑行"
+            return
+        }
+
+        guard mode == .chinese else { return }
+        let decoded = GlideLexicon.shared.chineseCandidates(xs: xs, ys: ys, keyboard: keyboard)
+        guard !decoded.isEmpty else { return }
+
+        var texts: [String] = []
+        // 实时预览只预览首选编码（预览会话较重）；抬手后再扩到前 3 个。
+        let codeLimit = isFinal ? 3 : 1
+        for candidate in decoded.prefix(codeLimit) {
+            for text in rime.previewCandidates(code: candidate.word) where !texts.contains(text) {
+                texts.append(text)
+            }
+            if texts.count >= 9 { break }
+        }
+        if texts.isEmpty {
+            texts = decoded.compactMap { GlideLexicon.shared.chineseWord(for: $0.word) }
+        }
+        guard !texts.isEmpty else { return }
+
+        glideMode = true
+        composing = decoded.first?.word ?? ""
+        candidates = Array(texts.prefix(9))
+        status = "滑行"
     }
 
     func updateContext(hasText: Bool) {

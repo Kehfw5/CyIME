@@ -22,9 +22,7 @@ struct KeyboardRootView: View {
     @State private var pressedID: String?
 
     @State private var glideActive = false
-    @State private var dwell: [String: TimeInterval] = [:]
-    @State private var visitOrder: [String] = []
-    @State private var lastPointTime: Date?
+    @State private var glidePoints: [CGPoint] = []
     @State private var lastPreviewAt: Date = .distantPast
 
     @State private var spaceAccum: CGFloat = 0
@@ -75,9 +73,7 @@ struct KeyboardRootView: View {
         startKey = key
         pressedID = key?.id
         glideActive = false
-        dwell = [:]
-        visitOrder = []
-        lastPointTime = nil
+        glidePoints = []
         lastPreviewAt = .distantPast
         spaceAccum = 0
         spaceLastX = 0
@@ -97,17 +93,13 @@ struct KeyboardRootView: View {
             startTime = nil
             pressedID = nil
             glideActive = false
-            dwell = [:]
-            visitOrder = []
-            lastPointTime = nil
+            glidePoints = []
         }
         guard let key else { return }
 
         if glideActive {
-            let dwellCode = buildCode(minDwellOnly: true)
-            let allCode = buildCode(minDwellOnly: false)
-            model.finishGlide(code: dwellCode.isEmpty ? allCode : dwellCode,
-                              fallback: allCode)
+            let (xs, ys) = glideArrays(glidePoints)
+            model.glideFinish(xs: xs, ys: ys, keyUnit: letterKeyUnit, centers: letterCenters)
             return
         }
 
@@ -146,70 +138,43 @@ struct KeyboardRootView: View {
                         + value.translation.height * value.translation.height).squareRoot()
             guard dist > 30 else { return }
             glideActive = true
-            lastPointTime = startTime
-            recordDwell(at: startPoint, now: Date())
+            glidePoints = [startPoint]
         }
 
-        recordDwell(at: value.location, now: Date())
+        glidePoints.append(value.location)
+        if glidePoints.count > 400 { glidePoints.removeFirst(200) }
 
         let now = Date()
-        if now.timeIntervalSince(lastPreviewAt) > 0.12 {
+        if now.timeIntervalSince(lastPreviewAt) > 0.15, glidePoints.count >= 4 {
             lastPreviewAt = now
-            let dwellCode = buildCode(minDwellOnly: true)
-            let allCode = buildCode(minDwellOnly: false)
-            let code = dwellCode.isEmpty ? allCode : dwellCode
-            if !code.isEmpty {
-                model.updateGlide(code: code, fallback: allCode)
-            }
+            let (xs, ys) = glideArrays(glidePoints)
+            model.glidePreview(xs: xs, ys: ys, keyUnit: letterKeyUnit, centers: letterCenters)
         }
     }
 
-    private func recordDwell(at point: CGPoint, now: Date) {
-        if let last = lastPointTime {
-            if let id = letterKeyID(at: point) {
-                dwell[id, default: 0] += now.timeIntervalSince(last)
-                if visitOrder.last != id {
-                    visitOrder.append(id)
-                }
-            }
-        }
-        lastPointTime = now
+    private func glideArrays(_ points: [CGPoint]) -> ([Float], [Float]) {
+        (points.map { Float($0.x) }, points.map { Float($0.y) })
     }
 
-    /// minDwellOnly = true：只取停留超过阈值的键（用户"停顿"的字母）；
-    /// false：按访问顺序取全部字母（快速滑过、没有明显停顿时的兜底）。
-    private func buildCode(minDwellOnly: Bool) -> String {
-        if minDwellOnly {
-            let threshold: TimeInterval = 0.05
-            var result = ""
-            var previous: Character?
-            for id in visitOrder where (dwell[id] ?? 0) >= threshold {
-                guard let ch = id.dropFirst(5).first else { continue }
-                if ch != previous {
-                    result.append(ch)
-                    previous = ch
-                }
-            }
-            return result
-        }
-
-        var result = ""
-        var previous: Character?
-        for id in visitOrder {
-            guard let ch = id.dropFirst(5).first else { continue }
-            if ch != previous {
-                result.append(ch)
-                previous = ch
-            }
-        }
-        return result
-    }
-
-    private func letterKeyID(at point: CGPoint) -> String? {
+    /// 字母键中心（与轨迹同一坐标系）。
+    private var letterCenters: [Character: (x: Float, y: Float)] {
+        var centers: [Character: (x: Float, y: Float)] = [:]
         for (id, rect) in keyFrames where id.hasPrefix("char-") {
-            if rect.contains(point) { return id }
+            if let letter = id.dropFirst(5).first {
+                centers[letter] = (Float(rect.midX), Float(rect.midY))
+            }
         }
-        return nil
+        return centers
+    }
+
+    private var letterKeyUnit: Float {
+        var widths: [Float] = []
+        for (id, rect) in keyFrames where id.hasPrefix("char-") {
+            widths.append(Float(rect.width))
+        }
+        guard !widths.isEmpty else { return 0 }
+        widths.sort()
+        return widths[widths.count / 2]
     }
 
     private func keySpec(at point: CGPoint) -> KeySpec? {
