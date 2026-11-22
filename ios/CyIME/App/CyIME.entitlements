@@ -4,7 +4,11 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.cyletix.cyime</string>
+		<string>group.0541a8a73a5a6c62.1</string>
+		<string>group.0541a8a73a5a6c62.2</string>
+		<string>group.0541a8a73a5a6c62.3</string>
+		<string>group.0541a8a73a5a6c62.4</string>
+		<string>group.0541a8a73a5a6c62.5</string>
 	</array>
 </dict>
 </plist>

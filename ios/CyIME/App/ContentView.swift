@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var testText = ""
     @State private var logText = ""
     @State private var groupStatus = "检查中"
+    @State private var probeText = ""
 
     var body: some View {
         NavigationStack {
@@ -94,6 +95,13 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
+            if !probeText.isEmpty {
+                Text(probeText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             ScrollView {
                 Text(logText.isEmpty ? "暂无日志" : logText)
                     .font(.system(size: 11, design: .monospaced))
@@ -117,9 +125,14 @@ struct ContentView: View {
     }
 
     private func refresh() {
-        groupStatus = AppGroup.containerURL == nil
-            ? "不可用（检查签名 / entitlement）"
-            : AppGroup.rootURL.path
+        if let id = AppGroup.resolvedIdentifier {
+            groupStatus = "可用 · \(id)\n路径：\(AppGroup.rootURL.path)"
+        } else {
+            groupStatus = "不可用（签名未注入 App Group 权限，5 个已授权群组均探测失败）"
+        }
+        probeText = AppGroup.probeResults
+            .map { "\($0.1 ? "✓" : "✗") \($0.0)" }
+            .joined(separator: "\n")
         logText = AppGroup.tailLog(maxLines: 100)
     }
 
