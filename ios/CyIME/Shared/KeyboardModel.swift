@@ -26,6 +26,7 @@ enum KeyAction: Hashable {
     case toggleMode
     case toggleNumbers
     case toggleSymbols
+    case letters
     case clearComposing
     case undoClear
     case dismiss
@@ -147,6 +148,7 @@ final class KeyboardModel: ObservableObject {
     func tap(_ action: KeyAction) {
         switch action {
         case .character(let value):
+            if glideMode { cancelGlide() }
             switch mode {
             case .chinese:
                 // 字母交给 Rime 组字；数字与标点直接上屏（中文标点做全角映射）。
@@ -179,6 +181,10 @@ final class KeyboardModel: ObservableObject {
                 deleteBackward()
             }
         case .space:
+            if glideMode {
+                if let first = candidates.first { commitCandidate(first) }
+                return
+            }
             if usesRime {
                 if composing.isEmpty { insertText(" ") } else { apply(rime.process(keycode: RimeKeycode.space)) }
             } else if !composing.isEmpty, let first = candidates.first {
@@ -202,13 +208,25 @@ final class KeyboardModel: ObservableObject {
             clearComposing()
             refreshStatus()
         case .toggleNumbers:
-            mode = (mode == .numbers) ? .chinese : .numbers
+            switch mode {
+            case .numbers: mode = .chinese
+            case .symbols: mode = .chinese
+            default: mode = .numbers
+            }
             resetShift()
+            cancelGlide()
             clearComposing()
             refreshStatus()
         case .toggleSymbols:
             mode = (mode == .symbols) ? .numbers : .symbols
             resetShift()
+            cancelGlide()
+            clearComposing()
+            refreshStatus()
+        case .letters:
+            mode = .chinese
+            resetShift()
+            cancelGlide()
             clearComposing()
             refreshStatus()
         case .clearComposing:
@@ -228,6 +246,10 @@ final class KeyboardModel: ObservableObject {
 
     func selectCandidate(at index: Int) {
         guard index >= 0, index < candidates.count else { return }
+        if glideMode {
+            commitCandidate(candidates[index])
+            return
+        }
         if usesRime {
             apply(rime.selectCandidate(index))
         } else {
@@ -293,26 +315,51 @@ final class KeyboardModel: ObservableObject {
 
     // MARK: - 滑行输入
 
-    /// 手指划过的字母序列作为编码，用 Rime 临时会话预览并上屏首个候选。
-    func performGlide(code: String) {
-        guard code.count >= 2 else { return }
-        guard mode == .chinese else {
-            // 英文滑行需要专门的词库解码器，后续版本接入。
+    private var glideMode = false
+
+    /// 滑行过程中实时更新：编码 + 候选（用 Rime 临时会话预览，不改动正式会话）。
+    /// code 为“停顿键”拼出的编码；若预览无候选，退回 fallback（整条轨迹的字母）。
+    func updateGlide(code: String, fallback: String = "") {
+        guard mode == .chinese else { return }
+        let trimmed = code.lowercased()
+        guard !trimmed.isEmpty else { return }
+
+        var used = trimmed
+        var results = rime.previewCandidates(code: trimmed)
+        let fb = fallback.lowercased()
+        if results.isEmpty, !fb.isEmpty, fb != trimmed {
+            let fallbackResults = rime.previewCandidates(code: fb)
+            if !fallbackResults.isEmpty {
+                used = fb
+                results = fallbackResults
+            }
+        }
+
+        glideMode = true
+        composing = used
+        candidates = results
+        status = "滑行"
+    }
+
+    /// 抬手：锁定最终编码与候选，交给用户点选（不直接上屏）。
+    func finishGlide(code: String, fallback: String) {
+        let trimmed = code.lowercased()
+        guard !trimmed.isEmpty else {
+            cancelGlide()
             return
         }
-        guard usesRime || rime.ensureReady() else {
-            AppGroup.appendLog("glide \(code) skipped: rime not ready")
-            return
+        updateGlide(code: trimmed, fallback: fallback)
+        if candidates.isEmpty {
+            cancelGlide()
         }
-        let results = rime.previewCandidates(code: code)
-        guard let first = results.first, !first.isEmpty else {
-            AppGroup.appendLog("glide \(code) -> no candidate")
-            return
-        }
-        insertText(first)
-        clearComposing()
-        status = "滑行：\(first)"
-        AppGroup.appendLog("glide \(code) -> \(first)")
+    }
+
+    func cancelGlide() {
+        guard glideMode else { return }
+        glideMode = false
+        composing = ""
+        candidates = []
+        refreshStatus()
     }
 
     func updateContext(hasText: Bool) {
@@ -356,6 +403,7 @@ final class KeyboardModel: ObservableObject {
     }
 
     private func clearComposing() {
+        glideMode = false
         composing = ""
         candidates = []
         if usesRime { _ = rime.clear() }
@@ -411,11 +459,6 @@ final class KeyboardModel: ObservableObject {
 
         let caps = shiftState == .caps
         var rows: [[KeySpec]] = []
-
-        // 顶部数字行（CyIME 26 键可选数字行，这里默认开启）。
-        rows.append(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map {
-            KeySpec(id: "num-\($0)", label: $0, action: .character($0), isCompact: true)
-        })
 
         rows.append(row0.map { letter, digit in
             KeySpec(
@@ -491,7 +534,7 @@ final class KeyboardModel: ObservableObject {
             symbols.map { KeySpec(id: "symbol-\($0)", label: $0, action: .character($0)) },
             thirdRow,
             [
-                KeySpec(id: "letters", label: "ABC", action: .toggleNumbers, width: 1.2, isSpecial: true),
+                KeySpec(id: "letters", label: "ABC", action: .letters, width: 1.2, isSpecial: true),
                 KeySpec(id: "symbols", label: "#+=", action: .toggleSymbols, width: 1.2, isSpecial: true),
                 KeySpec(id: "space", label: "space", action: .space, width: 3.0, isSpace: true),
                 KeySpec(id: "globe", label: "🌐", action: .globe, width: 1, isSpecial: true),
@@ -515,7 +558,7 @@ final class KeyboardModel: ObservableObject {
             row3,
             [
                 KeySpec(id: "numbers", label: "123", action: .toggleSymbols, width: 1.2, isSpecial: true),
-                KeySpec(id: "letters", label: "ABC", action: .toggleNumbers, width: 1.2, isSpecial: true),
+                KeySpec(id: "letters", label: "ABC", action: .letters, width: 1.2, isSpecial: true),
                 KeySpec(id: "space", label: "space", action: .space, width: 3.0, isSpace: true),
                 KeySpec(id: "globe", label: "🌐", action: .globe, width: 1, isSpecial: true),
                 KeySpec(id: "return", label: "⏎", action: .ret, width: 1.7, isAccent: true)

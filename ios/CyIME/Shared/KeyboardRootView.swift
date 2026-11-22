@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// 收集每个按键在键盘坐标系里的位置，供滑行输入做轨迹→按键命中测试。
+/// 收集每个按键在键盘坐标系里的位置，供统一手势做命中测试。
 private struct KeyFramePreferenceKey: PreferenceKey {
     static let defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -9,70 +9,224 @@ private struct KeyFramePreferenceKey: PreferenceKey {
     }
 }
 
+@MainActor
 struct KeyboardRootView: View {
     @ObservedObject var model: KeyboardModel
     @Environment(\.colorScheme) private var colorScheme
 
+    // 统一手势状态
     @State private var keyFrames: [String: CGRect] = [:]
-    @State private var trailPoints: [CGPoint] = []
+    @State private var startKey: KeySpec?
+    @State private var startTime: Date?
+    @State private var startPoint: CGPoint = .zero
+    @State private var pressedID: String?
+
+    @State private var glideActive = false
+    @State private var dwell: [String: TimeInterval] = [:]
+    @State private var visitOrder: [String] = []
+    @State private var lastPointTime: Date?
+    @State private var lastPreviewAt: Date = .distantPast
+
+    @State private var spaceAccum: CGFloat = 0
+    @State private var spaceLastX: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
             CandidateBar(model: model)
 
-            ForEach(Array(model.rows.enumerated()), id: \.offset) { item in
-                KeyRow(keys: item.element, model: model)
+            VStack(spacing: 0) {
+                ForEach(Array(model.rows.enumerated()), id: \.offset) { item in
+                    KeyRow(keys: item.element, pressedID: pressedID)
+                }
             }
+            .coordinateSpace(name: "keyboard")
+            .onPreferenceChange(KeyFramePreferenceKey.self) { keyFrames = $0 }
+            .gesture(keyboardGesture)
         }
         .padding(.vertical, 4)
         .background(keyboardBackground)
-        .coordinateSpace(name: "keyboard")
-        .onPreferenceChange(KeyFramePreferenceKey.self) { keyFrames = $0 }
-        .overlay(
-            GlideTrailOverlay(points: trailPoints)
-                .allowsHitTesting(false)
-        )
-        .simultaneousGesture(glideGesture)
     }
 
-    /// 滑行：记录手指轨迹，抬手时把划过的字母拼成编码交给 Rime 预览。
-    private var glideGesture: some Gesture {
+    // MARK: - 统一手势
+
+    private var keyboardGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard model.mode == .chinese else { return }
-                trailPoints.append(value.location)
-                if trailPoints.count > 300 {
-                    trailPoints.removeFirst(150)
+                if startKey == nil {
+                    beginTouch(at: value.startLocation)
                 }
+                guard let key = startKey else { return }
+
+                if key.isSpace {
+                    handleSpaceDrag(value.translation.width)
+                }
+
+                trackGlide(key: key, value: value)
             }
             .onEnded { value in
-                let points = trailPoints
-                trailPoints = []
-                guard model.mode == .chinese, points.count >= 3 else { return }
-                let dx = value.translation.width
-                let dy = value.translation.height
-                let moved = (dx * dx + dy * dy).squareRoot()
-                guard moved > 60 else { return }
-                let code = glideCode(from: points)
-                if code.count >= 2 {
-                    model.performGlide(code: code)
-                }
+                endTouch(value: value)
             }
     }
 
-    private func glideCode(from points: [CGPoint]) -> String {
-        var code = ""
-        var last: Character?
-        for point in points {
-            for (id, rect) in keyFrames where id.hasPrefix("char-") && rect.contains(point) {
-                if let letter = id.dropFirst(5).first, letter != last {
-                    code.append(letter)
-                    last = letter
-                }
-                break
+    private func beginTouch(at point: CGPoint) {
+        startPoint = point
+        startTime = Date()
+        let key = keySpec(at: point)
+        startKey = key
+        pressedID = key?.id
+        glideActive = false
+        dwell = [:]
+        visitOrder = []
+        lastPointTime = nil
+        lastPreviewAt = .distantPast
+        spaceAccum = 0
+        spaceLastX = 0
+
+        if key?.action == .delete {
+            model.beginDeleteRepeat()
+        }
+    }
+
+    private func endTouch(value: DragGesture.Value) {
+        model.endDeleteRepeat()
+        let key = startKey
+        let startedAt = startTime
+
+        defer {
+            startKey = nil
+            startTime = nil
+            pressedID = nil
+            glideActive = false
+            dwell = [:]
+            visitOrder = []
+            lastPointTime = nil
+        }
+        guard let key else { return }
+
+        if glideActive {
+            let dwellCode = buildCode(minDwellOnly: true)
+            let allCode = buildCode(minDwellOnly: false)
+            model.finishGlide(code: dwellCode.isEmpty ? allCode : dwellCode,
+                              fallback: allCode)
+            return
+        }
+
+        let dx = value.translation.width
+        let dy = value.translation.height
+        let held = Date().timeIntervalSince(startedAt ?? Date())
+
+        if abs(dx) < 16, abs(dy) < 16 {
+            // 长按删除已连删时不再补一次。
+            if key.action == .delete, held >= 0.4 { return }
+            model.tap(key.action)
+        } else if dy < -14, abs(dx) < 40, let up = key.swipeUp {
+            model.tap(up)
+        } else if dy > 14, abs(dx) < 40, let down = key.swipeDown {
+            model.tap(down)
+        }
+    }
+
+    private func handleSpaceDrag(_ x: CGFloat) {
+        spaceAccum += x - spaceLastX
+        spaceLastX = x
+        while abs(spaceAccum) >= 12 {
+            let step = spaceAccum > 0 ? 1 : -1
+            model.moveCursorBy(step)
+            spaceAccum -= CGFloat(step) * 12
+        }
+    }
+
+    // MARK: - 滑行
+
+    private func trackGlide(key: KeySpec, value: DragGesture.Value) {
+        guard key.id.hasPrefix("char-") else { return }
+
+        if !glideActive {
+            let dist = (value.translation.width * value.translation.width
+                        + value.translation.height * value.translation.height).squareRoot()
+            guard dist > 30 else { return }
+            glideActive = true
+            lastPointTime = startTime
+            recordDwell(at: startPoint, now: Date())
+        }
+
+        recordDwell(at: value.location, now: Date())
+
+        let now = Date()
+        if now.timeIntervalSince(lastPreviewAt) > 0.12 {
+            lastPreviewAt = now
+            let dwellCode = buildCode(minDwellOnly: true)
+            let allCode = buildCode(minDwellOnly: false)
+            let code = dwellCode.isEmpty ? allCode : dwellCode
+            if !code.isEmpty {
+                model.updateGlide(code: code, fallback: allCode)
             }
         }
-        return code
+    }
+
+    private func recordDwell(at point: CGPoint, now: Date) {
+        if let last = lastPointTime {
+            if let id = letterKeyID(at: point) {
+                dwell[id, default: 0] += now.timeIntervalSince(last)
+                if visitOrder.last != id {
+                    visitOrder.append(id)
+                }
+            }
+        }
+        lastPointTime = now
+    }
+
+    /// minDwellOnly = true：只取停留超过阈值的键（用户"停顿"的字母）；
+    /// false：按访问顺序取全部字母（快速滑过、没有明显停顿时的兜底）。
+    private func buildCode(minDwellOnly: Bool) -> String {
+        if minDwellOnly {
+            let threshold: TimeInterval = 0.05
+            var result = ""
+            var previous: Character?
+            for id in visitOrder where (dwell[id] ?? 0) >= threshold {
+                guard let ch = id.dropFirst(5).first else { continue }
+                if ch != previous {
+                    result.append(ch)
+                    previous = ch
+                }
+            }
+            return result
+        }
+
+        var result = ""
+        var previous: Character?
+        for id in visitOrder {
+            guard let ch = id.dropFirst(5).first else { continue }
+            if ch != previous {
+                result.append(ch)
+                previous = ch
+            }
+        }
+        return result
+    }
+
+    private func letterKeyID(at point: CGPoint) -> String? {
+        for (id, rect) in keyFrames where id.hasPrefix("char-") {
+            if rect.contains(point) { return id }
+        }
+        return nil
+    }
+
+    private func keySpec(at point: CGPoint) -> KeySpec? {
+        for (id, rect) in keyFrames where rect.contains(point) {
+            if let spec = specsByID[id] { return spec }
+        }
+        return nil
+    }
+
+    private var specsByID: [String: KeySpec] {
+        var map: [String: KeySpec] = [:]
+        for row in model.rows {
+            for key in row where !key.isSpacer {
+                map[key.id] = key
+            }
+        }
+        return map
     }
 
     private var keyboardBackground: some View {
@@ -87,30 +241,9 @@ struct KeyboardRootView: View {
     }
 }
 
-private struct GlideTrailOverlay: View {
-    let points: [CGPoint]
-
-    var body: some View {
-        Canvas { context, _ in
-            guard points.count > 1 else { return }
-            var path = Path()
-            path.addLines(points)
-            context.stroke(
-                path,
-                with: .color(Color.accentColor.opacity(0.7)),
-                style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
-            )
-        }
-    }
-}
-
 private struct KeyRow: View {
     let keys: [KeySpec]
-    @ObservedObject var model: KeyboardModel
-
-    private var rowHeight: CGFloat {
-        keys.first?.isCompact == true ? 36 : 44
-    }
+    let pressedID: String?
 
     var body: some View {
         GeometryReader { geometry in
@@ -120,26 +253,14 @@ private struct KeyRow: View {
                         Color.clear
                             .frame(width: width(for: key, totalWidth: geometry.size.width))
                     } else {
-                        KeyButton(
-                            key: key,
-                            onTap: { model.tap(key.action) },
-                            onSwipeUp: key.swipeUp.map { action -> () -> Void in
-                                { model.tap(action) }
-                            },
-                            onSwipeDown: key.swipeDown.map { action -> () -> Void in
-                                { model.tap(action) }
-                            },
-                            onSpaceDrag: key.isSpace ? { (steps: Int) in model.moveCursorBy(steps) } : nil,
-                            onRepeatBegin: key.action == .delete ? { model.beginDeleteRepeat() } : nil,
-                            onRepeatEnd: key.action == .delete ? { model.endDeleteRepeat() } : nil
-                        )
-                        .frame(width: width(for: key, totalWidth: geometry.size.width))
+                        KeyButton(key: key, isPressed: pressedID == key.id)
+                            .frame(width: width(for: key, totalWidth: geometry.size.width))
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(height: rowHeight)
+        .frame(height: 44)
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
     }
@@ -152,20 +273,10 @@ private struct KeyRow: View {
     }
 }
 
-/// 键帽：点按 / 上下滑（数字、清空、撤回）/ 空格横滑移动光标 / 删除长按连删。
+/// 纯展示键帽：手势统一由键盘容器处理，这里不挂任何手势。
 private struct KeyButton: View {
     let key: KeySpec
-    let onTap: () -> Void
-    let onSwipeUp: (() -> Void)?
-    let onSwipeDown: (() -> Void)?
-    let onSpaceDrag: ((Int) -> Void)?
-    let onRepeatBegin: (() -> Void)?
-    let onRepeatEnd: (() -> Void)?
-
-    @State private var pressed = false
-    @State private var spaceDragAccum: CGFloat = 0
-    @State private var lastDragX: CGFloat = 0
-    @State private var pressStart: Date?
+    let isPressed: Bool
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -199,53 +310,8 @@ private struct KeyButton: View {
             }
         )
         .shadow(color: .black.opacity(0.07), radius: 1, x: 0, y: 1)
-        .scaleEffect(pressed ? 0.94 : 1)
-        .animation(.easeOut(duration: 0.08), value: pressed)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if !pressed {
-                        pressed = true
-                        pressStart = Date()
-                        onRepeatBegin?()
-                    }
-                    if let onSpaceDrag {
-                        handleSpaceDrag(value.translation.width, emit: onSpaceDrag)
-                    }
-                }
-                .onEnded { value in
-                    pressed = false
-                    spaceDragAccum = 0
-                    lastDragX = 0
-                    let held = Date().timeIntervalSince(pressStart ?? Date())
-                    pressStart = nil
-                    onRepeatEnd?()
-
-                    let dx = value.translation.width
-                    let dy = value.translation.height
-                    if abs(dx) < 16, abs(dy) < 16 {
-                        // 长按已触发连删时不再补一次。
-                        if onRepeatBegin != nil, held >= 0.4 { return }
-                        onTap()
-                    } else if dy < -14, abs(dx) < 40, let onSwipeUp {
-                        onSwipeUp()
-                    } else if dy > 14, abs(dx) < 40, let onSwipeDown {
-                        onSwipeDown()
-                    }
-                }
-        )
-    }
-
-    private func handleSpaceDrag(_ translation: CGFloat, emit: (Int) -> Void) {
-        spaceDragAccum += translation - lastDragX
-        lastDragX = translation
-        let stepWidth: CGFloat = 12
-        while abs(spaceDragAccum) >= stepWidth {
-            let step = spaceDragAccum > 0 ? 1 : -1
-            emit(step)
-            spaceDragAccum -= CGFloat(step) * stepWidth
-        }
+        .scaleEffect(isPressed ? 0.94 : 1)
+        .animation(.easeOut(duration: 0.08), value: isPressed)
     }
 
     private var fontSize: CGFloat {
@@ -273,7 +339,6 @@ private struct KeyButton: View {
 
 private struct CandidateBar: View {
     @ObservedObject var model: KeyboardModel
-
     var body: some View {
         HStack(spacing: 6) {
             if !model.composing.isEmpty {
