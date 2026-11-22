@@ -31,6 +31,9 @@ final class KeyboardViewController: UIInputViewController {
             },
             dismissKeyboard: { [weak self] in
                 self?.dismissKeyboard()
+            },
+            moveCursor: { [weak self] steps in
+                self?.textDocumentProxy.adjustTextPosition(byCharacterOffset: steps)
             }
         )
         self.model = model
@@ -51,7 +54,8 @@ final class KeyboardViewController: UIInputViewController {
         hosting.didMove(toParent: self)
         hostingController = hosting
 
-        let height = view.heightAnchor.constraint(equalToConstant: 286)
+        // 4 行 × 44 + 行间距 + 候选栏 46 ≈ 246
+        let height = view.heightAnchor.constraint(equalToConstant: 246)
         height.priority = UILayoutPriority(999)
         height.isActive = true
     }
