@@ -1,0 +1,61 @@
+name: CyIME
+
+options:
+  bundleIdPrefix: com.cyletix
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  CyIME:
+    type: application
+    platform: iOS
+    sources:
+      - path: CyIME/App
+        excludes:
+          - Info.plist
+          - CyIME.entitlements
+      - path: CyIME/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cyletix.cyime
+        PRODUCT_NAME: CyIME
+        INFOPLIST_FILE: CyIME/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CyIME/App/CyIME.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: NO
+    dependencies:
+      - target: CyIMEKeyboard
+        embed: true
+
+  CyIMEKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CyIME/Keyboard
+        excludes:
+          - Info.plist
+          - CyIMEKeyboard.entitlements
+      - path: CyIME/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cyletix.cyime.keyboard
+        PRODUCT_NAME: CyIMEKeyboard
+        INFOPLIST_FILE: CyIME/Keyboard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CyIME/Keyboard/CyIMEKeyboard.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
