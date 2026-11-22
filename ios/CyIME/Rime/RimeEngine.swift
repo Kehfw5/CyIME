@@ -110,6 +110,12 @@ final class RimeEngine {
         ready = !schema.isEmpty
     }
 
+    /// 用临时会话预览一串编码（滑行输入），不影响当前组字状态。
+    func previewCandidates(code: String) -> [String] {
+        guard ready, !code.isEmpty else { return [] }
+        return bridge.previewCandidates(forCode: code)
+    }
+
     @discardableResult
     func process(keycode: Int32, mask: Int32 = 0) -> RimeState {
         bridge.processKey(keycode, mask: mask)

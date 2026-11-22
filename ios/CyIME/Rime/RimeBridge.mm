@@ -217,4 +217,27 @@ static const int RimeControlMask = 4;
     return [NSString stringWithUTF8String:buffer];
 }
 
+- (NSArray<NSString *> *)previewCandidatesForCode:(NSString *)code {
+    if (_api == NULL || code.length == 0) return @[];
+
+    RimeSessionId preview = _api->create_session();
+    if (preview == 0) return @[];
+
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    _api->set_input(preview, code.UTF8String);
+    RimeContext ctx = {0};
+    RIME_STRUCT_INIT(RimeContext, ctx);
+    if (_api->get_context(preview, &ctx)) {
+        for (int i = 0; i < ctx.menu.num_candidates; i++) {
+            const char *text = ctx.menu.candidates[i].text;
+            if (text != NULL) {
+                [result addObject:[NSString stringWithUTF8String:text]];
+            }
+        }
+        _api->free_context(&ctx);
+    }
+    _api->destroy_session(preview);
+    return result;
+}
+
 @end

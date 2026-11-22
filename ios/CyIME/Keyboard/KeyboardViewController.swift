@@ -54,8 +54,8 @@ final class KeyboardViewController: UIInputViewController {
         hosting.didMove(toParent: self)
         hostingController = hosting
 
-        // 4 行 × 44 + 行间距 + 候选栏 46 ≈ 246
-        let height = view.heightAnchor.constraint(equalToConstant: 246)
+        // 候选栏 46 + 数字行 36 + 4 行 × 44 + 行间距 ≈ 282
+        let height = view.heightAnchor.constraint(equalToConstant: 282)
         height.priority = UILayoutPriority(999)
         height.isActive = true
     }

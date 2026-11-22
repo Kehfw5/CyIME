@@ -1,9 +1,20 @@
 import SwiftUI
 import UIKit
 
+/// 收集每个按键在键盘坐标系里的位置，供滑行输入做轨迹→按键命中测试。
+private struct KeyFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
 struct KeyboardRootView: View {
     @ObservedObject var model: KeyboardModel
     @Environment(\.colorScheme) private var colorScheme
+
+    @State private var keyFrames: [String: CGRect] = [:]
+    @State private var trailPoints: [CGPoint] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +26,53 @@ struct KeyboardRootView: View {
         }
         .padding(.vertical, 4)
         .background(keyboardBackground)
+        .coordinateSpace(name: "keyboard")
+        .onPreferenceChange(KeyFramePreferenceKey.self) { keyFrames = $0 }
+        .overlay(
+            GlideTrailOverlay(points: trailPoints)
+                .allowsHitTesting(false)
+        )
+        .simultaneousGesture(glideGesture)
+    }
+
+    /// 滑行：记录手指轨迹，抬手时把划过的字母拼成编码交给 Rime 预览。
+    private var glideGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard model.mode == .chinese else { return }
+                trailPoints.append(value.location)
+                if trailPoints.count > 300 {
+                    trailPoints.removeFirst(150)
+                }
+            }
+            .onEnded { value in
+                let points = trailPoints
+                trailPoints = []
+                guard model.mode == .chinese, points.count >= 3 else { return }
+                let dx = value.translation.width
+                let dy = value.translation.height
+                let moved = (dx * dx + dy * dy).squareRoot()
+                guard moved > 60 else { return }
+                let code = glideCode(from: points)
+                if code.count >= 2 {
+                    model.performGlide(code: code)
+                }
+            }
+    }
+
+    private func glideCode(from points: [CGPoint]) -> String {
+        var code = ""
+        var last: Character?
+        for point in points {
+            for (id, rect) in keyFrames where id.hasPrefix("char-") && rect.contains(point) {
+                if let letter = id.dropFirst(5).first, letter != last {
+                    code.append(letter)
+                    last = letter
+                }
+                break
+            }
+        }
+        return code
     }
 
     private var keyboardBackground: some View {
@@ -29,9 +87,30 @@ struct KeyboardRootView: View {
     }
 }
 
+private struct GlideTrailOverlay: View {
+    let points: [CGPoint]
+
+    var body: some View {
+        Canvas { context, _ in
+            guard points.count > 1 else { return }
+            var path = Path()
+            path.addLines(points)
+            context.stroke(
+                path,
+                with: .color(Color.accentColor.opacity(0.7)),
+                style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+            )
+        }
+    }
+}
+
 private struct KeyRow: View {
     let keys: [KeySpec]
     @ObservedObject var model: KeyboardModel
+
+    private var rowHeight: CGFloat {
+        keys.first?.isCompact == true ? 36 : 44
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -47,7 +126,12 @@ private struct KeyRow: View {
                             onSwipeUp: key.swipeUp.map { action -> () -> Void in
                                 { model.tap(action) }
                             },
-                            onSpaceDrag: key.isSpace ? { (steps: Int) in model.moveCursorBy(steps) } : nil
+                            onSwipeDown: key.swipeDown.map { action -> () -> Void in
+                                { model.tap(action) }
+                            },
+                            onSpaceDrag: key.isSpace ? { (steps: Int) in model.moveCursorBy(steps) } : nil,
+                            onRepeatBegin: key.action == .delete ? { model.beginDeleteRepeat() } : nil,
+                            onRepeatEnd: key.action == .delete ? { model.endDeleteRepeat() } : nil
                         )
                         .frame(width: width(for: key, totalWidth: geometry.size.width))
                     }
@@ -55,7 +139,7 @@ private struct KeyRow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(height: 44)
+        .frame(height: rowHeight)
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
     }
@@ -68,16 +152,20 @@ private struct KeyRow: View {
     }
 }
 
-/// 键帽：点按 / 上滑（出数字或符号）/ 空格横向拖动移动光标。
+/// 键帽：点按 / 上下滑（数字、清空、撤回）/ 空格横滑移动光标 / 删除长按连删。
 private struct KeyButton: View {
     let key: KeySpec
     let onTap: () -> Void
     let onSwipeUp: (() -> Void)?
+    let onSwipeDown: (() -> Void)?
     let onSpaceDrag: ((Int) -> Void)?
+    let onRepeatBegin: (() -> Void)?
+    let onRepeatEnd: (() -> Void)?
 
     @State private var pressed = false
     @State private var spaceDragAccum: CGFloat = 0
     @State private var lastDragX: CGFloat = 0
+    @State private var pressStart: Date?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -102,6 +190,14 @@ private struct KeyButton: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
         )
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: KeyFramePreferenceKey.self,
+                    value: [key.id: proxy.frame(in: .named("keyboard"))]
+                )
+            }
+        )
         .shadow(color: .black.opacity(0.07), radius: 1, x: 0, y: 1)
         .scaleEffect(pressed ? 0.94 : 1)
         .animation(.easeOut(duration: 0.08), value: pressed)
@@ -109,7 +205,11 @@ private struct KeyButton: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
-                    if !pressed { pressed = true }
+                    if !pressed {
+                        pressed = true
+                        pressStart = Date()
+                        onRepeatBegin?()
+                    }
                     if let onSpaceDrag {
                         handleSpaceDrag(value.translation.width, emit: onSpaceDrag)
                     }
@@ -117,12 +217,21 @@ private struct KeyButton: View {
                 .onEnded { value in
                     pressed = false
                     spaceDragAccum = 0
+                    lastDragX = 0
+                    let held = Date().timeIntervalSince(pressStart ?? Date())
+                    pressStart = nil
+                    onRepeatEnd?()
+
                     let dx = value.translation.width
                     let dy = value.translation.height
                     if abs(dx) < 16, abs(dy) < 16 {
+                        // 长按已触发连删时不再补一次。
+                        if onRepeatBegin != nil, held >= 0.4 { return }
                         onTap()
                     } else if dy < -14, abs(dx) < 40, let onSwipeUp {
                         onSwipeUp()
+                    } else if dy > 14, abs(dx) < 40, let onSwipeDown {
+                        onSwipeDown()
                     }
                 }
         )
@@ -143,7 +252,9 @@ private struct KeyButton: View {
         switch key.action {
         case .space: return 15
         case .globe: return 18
-        default: return key.isSpecial ? 14 : 20
+        default:
+            if key.isCompact { return 16 }
+            return key.isSpecial ? 14 : 20
         }
     }
 

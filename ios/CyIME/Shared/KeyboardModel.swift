@@ -6,6 +6,7 @@ enum InputMode: String, Equatable {
     case chinese = "中"
     case english = "英"
     case numbers = "123"
+    case symbols = "#+="
 }
 
 /// Shift 三态：普通 / 单次大写 / 大写锁定（双击 Shift）。
@@ -24,6 +25,9 @@ enum KeyAction: Hashable {
     case globe
     case toggleMode
     case toggleNumbers
+    case toggleSymbols
+    case clearComposing
+    case undoClear
     case dismiss
 }
 
@@ -35,10 +39,14 @@ struct KeySpec: Identifiable, Hashable {
     var isSpecial: Bool = false
     var isAccent: Bool = false
     var isSpacer: Bool = false
+    /// 更矮的行（顶部数字行）。
+    var isCompact: Bool = false
     /// 右上角小提示（26 键上滑数字）。
     var hint: String?
     /// 上滑动作。
     var swipeUp: KeyAction?
+    /// 下滑动作（删除键：撤回清空）。
+    var swipeDown: KeyAction?
     /// 是否空格键（支持滑动移动光标）。
     var isSpace: Bool = false
 }
@@ -102,6 +110,8 @@ final class KeyboardModel: ObservableObject {
     private let stub = StubChineseEngine()
     private let rime = RimeEngine.shared
     private var lastShiftTap: Date = .distantPast
+    private var lastCleared: String?
+    private var deleteRepeatTask: Task<Void, Never>?
 
     private var usesRime: Bool { rime.isReady }
 
@@ -127,6 +137,7 @@ final class KeyboardModel: ObservableObject {
     var rows: [[KeySpec]] {
         switch mode {
         case .numbers: return numberRows
+        case .symbols: return symbolRows
         case .chinese, .english: return letterRows
         }
     }
@@ -138,16 +149,22 @@ final class KeyboardModel: ObservableObject {
         case .character(let value):
             switch mode {
             case .chinese:
-                if usesRime || rime.ensureReady() {
-                    apply(rime.process(keycode: keycode(for: value)))
+                // 字母交给 Rime 组字；数字与标点直接上屏（中文标点做全角映射）。
+                guard let first = value.first else { return }
+                if first.isLetter {
+                    if usesRime || rime.ensureReady() {
+                        apply(rime.process(keycode: keycode(for: value)))
+                    } else {
+                        composing += value.lowercased()
+                        refreshCandidates()
+                    }
                 } else {
-                    composing += value.lowercased()
-                    refreshCandidates()
+                    insertText(chinesePunctuation(value))
                 }
             case .english:
                 insertText(display(value))
                 if shiftState == .on { shiftState = .off }
-            case .numbers:
+            case .numbers, .symbols:
                 insertText(value)
             }
         case .shift:
@@ -189,6 +206,15 @@ final class KeyboardModel: ObservableObject {
             resetShift()
             clearComposing()
             refreshStatus()
+        case .toggleSymbols:
+            mode = (mode == .symbols) ? .numbers : .symbols
+            resetShift()
+            clearComposing()
+            refreshStatus()
+        case .clearComposing:
+            clearComposingWithUndo()
+        case .undoClear:
+            undoClear()
         case .dismiss:
             dismissKeyboard()
         }
@@ -226,6 +252,69 @@ final class KeyboardModel: ObservableObject {
         status = "已上屏：\(text)"
     }
 
+    // MARK: - 删除手势
+
+    /// 删除键上滑：清空当前编码（可撤回）。
+    func clearComposingWithUndo() {
+        lastCleared = composing
+        clearComposing()
+    }
+
+    /// 删除键下滑：撤回上一次清空。
+    func undoClear() {
+        guard let text = lastCleared, !text.isEmpty else { return }
+        lastCleared = nil
+        if usesRime {
+            for ch in text.lowercased() {
+                apply(rime.process(keycode: keycode(for: String(ch))))
+            }
+        } else {
+            composing = text
+            refreshCandidates()
+        }
+    }
+
+    /// 删除键长按：连续删除（先等 0.4s，之后每 80ms 一次）。
+    func beginDeleteRepeat() {
+        guard deleteRepeatTask == nil else { return }
+        deleteRepeatTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            while !Task.isCancelled {
+                self?.tap(.delete)
+                try? await Task.sleep(nanoseconds: 80_000_000)
+            }
+        }
+    }
+
+    func endDeleteRepeat() {
+        deleteRepeatTask?.cancel()
+        deleteRepeatTask = nil
+    }
+
+    // MARK: - 滑行输入
+
+    /// 手指划过的字母序列作为编码，用 Rime 临时会话预览并上屏首个候选。
+    func performGlide(code: String) {
+        guard code.count >= 2 else { return }
+        guard mode == .chinese else {
+            // 英文滑行需要专门的词库解码器，后续版本接入。
+            return
+        }
+        guard usesRime || rime.ensureReady() else {
+            AppGroup.appendLog("glide \(code) skipped: rime not ready")
+            return
+        }
+        let results = rime.previewCandidates(code: code)
+        guard let first = results.first, !first.isEmpty else {
+            AppGroup.appendLog("glide \(code) -> no candidate")
+            return
+        }
+        insertText(first)
+        clearComposing()
+        status = "滑行：\(first)"
+        AppGroup.appendLog("glide \(code) -> \(first)")
+    }
+
     func updateContext(hasText: Bool) {
         self.hasText = hasText
     }
@@ -242,7 +331,6 @@ final class KeyboardModel: ObservableObject {
         case .off:
             shiftState = .on
         case .on:
-            // 双击 Shift 进入大写锁定。
             shiftState = (now.timeIntervalSince(lastShiftTap) < 0.35) ? .caps : .off
         case .caps:
             shiftState = .off
@@ -295,9 +383,24 @@ final class KeyboardModel: ObservableObject {
         }
     }
 
+    /// 中文模式下的标点全角映射。
+    private func chinesePunctuation(_ value: String) -> String {
+        switch value {
+        case ",": return "，"
+        case ".": return "。"
+        case "?": return "？"
+        case "!": return "！"
+        case ":": return "："
+        case ";": return "；"
+        case "'": return "’"
+        case "\"": return "”"
+        default: return value
+        }
+    }
+
     // MARK: - 布局
 
-    /// 26 键字母行：上滑出数字（q=1 … o=9，p=0），与 CyIME 26 键一致。
+    /// 26 键字母行：顶部数字行 + 三行字母（上滑出数字），底排按 CyIME 权重。
     private var letterRows: [[KeySpec]] {
         let row0: [(String, String)] = [
             ("q", "1"), ("w", "2"), ("e", "3"), ("r", "4"), ("t", "5"),
@@ -306,14 +409,18 @@ final class KeyboardModel: ObservableObject {
         let row1 = ["a", "s", "d", "f", "g", "h", "j", "k", "l"]
         let row2 = ["z", "x", "c", "v", "b", "n", "m"]
 
-        let shiftedLabels = shiftState == .caps
-
+        let caps = shiftState == .caps
         var rows: [[KeySpec]] = []
+
+        // 顶部数字行（CyIME 26 键可选数字行，这里默认开启）。
+        rows.append(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].map {
+            KeySpec(id: "num-\($0)", label: $0, action: .character($0), isCompact: true)
+        })
 
         rows.append(row0.map { letter, digit in
             KeySpec(
                 id: "char-\(letter)",
-                label: shiftedLabels ? letter.uppercased() : letter,
+                label: caps ? letter.uppercased() : letter,
                 action: .character(letter),
                 hint: digit,
                 swipeUp: .character(digit)
@@ -324,7 +431,7 @@ final class KeyboardModel: ObservableObject {
         second += row1.map { letter in
             KeySpec(
                 id: "char-\(letter)",
-                label: shiftedLabels ? letter.uppercased() : letter,
+                label: caps ? letter.uppercased() : letter,
                 action: .character(letter)
             )
         }
@@ -337,11 +444,12 @@ final class KeyboardModel: ObservableObject {
         third += row2.map { letter in
             KeySpec(
                 id: "char-\(letter)",
-                label: shiftedLabels ? letter.uppercased() : letter,
+                label: caps ? letter.uppercased() : letter,
                 action: .character(letter)
             )
         }
-        third.append(KeySpec(id: "delete", label: "⌫", action: .delete, width: 1.5, isSpecial: true))
+        third.append(KeySpec(id: "delete", label: "⌫", action: .delete, width: 1.5, isSpecial: true,
+                             swipeUp: .clearComposing, swipeDown: .undoClear))
         rows.append(third)
 
         rows.append(bottomRow)
@@ -359,7 +467,7 @@ final class KeyboardModel: ObservableObject {
     /// 底排：123 / 逗号 / 空格 / 句号 / 地球 / 回车，权重按 CyIME 26 键。
     private var bottomRow: [KeySpec] {
         [
-            KeySpec(id: "numbers", label: mode == .numbers ? "ABC" : "123", action: .toggleNumbers, width: 1.2, isSpecial: true),
+            KeySpec(id: "numbers", label: "123", action: .toggleNumbers, width: 1.2, isSpecial: true),
             KeySpec(id: "comma", label: mode == .chinese ? "，" : ",", action: .character(","), width: 1, swipeUp: .character("'")),
             KeySpec(id: "space", label: mode == .chinese ? "空格" : "space", action: .space, width: 3.9, isSpace: true),
             KeySpec(id: "period", label: mode == .chinese ? "。" : ".", action: .character("."), width: 1, swipeUp: .character("?")),
@@ -375,7 +483,8 @@ final class KeyboardModel: ObservableObject {
         var thirdRow = [".", ",", "?", "!", "'"].map { character in
             KeySpec(id: "symbol-\(character)", label: character, action: .character(character))
         }
-        thirdRow.append(KeySpec(id: "delete", label: "⌫", action: .delete, width: 1.5, isSpecial: true))
+        thirdRow.append(KeySpec(id: "delete", label: "⌫", action: .delete, width: 1.5, isSpecial: true,
+                                swipeUp: .clearComposing, swipeDown: .undoClear))
 
         return [
             digits.map { KeySpec(id: "digit-\($0)", label: $0, action: .character($0)) },
@@ -383,7 +492,31 @@ final class KeyboardModel: ObservableObject {
             thirdRow,
             [
                 KeySpec(id: "letters", label: "ABC", action: .toggleNumbers, width: 1.2, isSpecial: true),
-                KeySpec(id: "space", label: "space", action: .space, width: 3.9, isSpace: true),
+                KeySpec(id: "symbols", label: "#+=", action: .toggleSymbols, width: 1.2, isSpecial: true),
+                KeySpec(id: "space", label: "space", action: .space, width: 3.0, isSpace: true),
+                KeySpec(id: "globe", label: "🌐", action: .globe, width: 1, isSpecial: true),
+                KeySpec(id: "return", label: "⏎", action: .ret, width: 1.7, isAccent: true)
+            ]
+        ]
+    }
+
+    private var symbolRows: [[KeySpec]] {
+        let row1 = ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="]
+        let row2 = ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"]
+        var row3 = ["…", "、", "。", "，", "？", "！", "\"", "'"].map { symbol in
+            KeySpec(id: "sym-\(symbol)", label: symbol, action: .character(symbol))
+        }
+        row3.append(KeySpec(id: "delete", label: "⌫", action: .delete, width: 1.5, isSpecial: true,
+                            swipeUp: .clearComposing, swipeDown: .undoClear))
+
+        return [
+            row1.map { KeySpec(id: "sym-\($0)", label: $0, action: .character($0)) },
+            row2.map { KeySpec(id: "sym-\($0)", label: $0, action: .character($0)) },
+            row3,
+            [
+                KeySpec(id: "numbers", label: "123", action: .toggleSymbols, width: 1.2, isSpecial: true),
+                KeySpec(id: "letters", label: "ABC", action: .toggleNumbers, width: 1.2, isSpecial: true),
+                KeySpec(id: "space", label: "space", action: .space, width: 3.0, isSpace: true),
                 KeySpec(id: "globe", label: "🌐", action: .globe, width: 1, isSpecial: true),
                 KeySpec(id: "return", label: "⏎", action: .ret, width: 1.7, isAccent: true)
             ]

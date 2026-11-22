@@ -57,6 +57,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// 当前 schema id。
 - (nullable NSString *)schemaId;
 
+/// 用一个临时会话预览一串编码（滑行输入用），返回候选文本。
+/// 不影响当前会话的组字状态。
+- (NSArray<NSString *> *)previewCandidatesForCode:(NSString *)code;
+
 @end
 
 NS_ASSUME_NONNULL_END
