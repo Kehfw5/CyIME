@@ -45,7 +45,11 @@ cmake -S "$NATIVE_DIR" -B "$BUILD_DIR" \
   -DBUILD_SHARED_LIBS=OFF
 
 echo "==> 编译 (-j$JOBS)"
-cmake --build "$BUILD_DIR" --config Release -- -j"$JOBS"
+# 只构建 rime-static，不构建 ALL：
+#  - opencc 的 data 目标（ALL）会运行刚编出的 iOS 版 opencc_dict 生成 .ocd2，
+#    iOS 二进制在 macOS 上无法执行（Error 127）。Rime 自己带 opencc 数据，用不到它。
+#  - 这样也跳过 leveldbutil / opencc 等我们用不上的命令行工具。
+cmake --build "$BUILD_DIR" --config Release --target rime-static -- -j"$JOBS"
 
 echo "==> 合并静态库 -> libCyIMERime.a"
 mkdir -p "$OUT_DIR"
